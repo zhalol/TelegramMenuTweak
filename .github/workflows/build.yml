@@ -7,42 +7,47 @@ on:
       - 'Tweak.x'
       - 'Makefile'
       - 'control'
+      - '.github/workflows/build.yml'
 
 jobs:
   build:
-    runs-on: macos-latest
-    timeout-minutes: 20
-    
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git make perl clang ldid dpkg-dev xz-utils curl ca-certificates
+
       - name: Install Theos
         run: |
-          git clone --depth=1 https://github.com/theos/theos.git ~/theos
-          echo "THEOS=$HOME/theos" >> $GITHUB_ENV
-          echo "$HOME/theos/bin" >> $GITHUB_PATH
-      
-      - name: Install dependencies
+          git clone --depth=1 https://github.com/theos/theos.git "$HOME/theos"
+          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+          echo "$HOME/theos/bin" >> "$GITHUB_PATH"
+
+      - name: Show project files
         run: |
-          brew untap aws/tap || true
-          brew install ldid dpkg
-      
+          pwd
+          ls -la
+          find . -maxdepth 3 -type f | sort
+
       - name: Build tweak
         run: |
           make clean
-          make package
-      
-      - name: Upload dylib
+          make package FINALPACKAGE=1
+
+      - name: Upload build output
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: botcczz.dylib
-          path: botcczz.dylib
-          retention-days: 30
-      
-      - name: Upload .deb package
-        uses: actions/upload-artifact@v4
-        with:
-          name: botcczz.deb
-          path: .theos/packages/*.deb
+          name: TelegramMenuTweak-build
+          path: |
+            .theos/obj/**/*.dylib
+            .theos/packages/*.deb
+            *.dylib
+          if-no-files-found: warn
           retention-days: 30
