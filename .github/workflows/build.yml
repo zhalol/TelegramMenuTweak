@@ -28,7 +28,7 @@ jobs:
           brew install ldid dpkg
       
       - name: Build tweak
-        working-directory: ./TelegramMenuTweak
+        working-directory: .
         run: |
           make clean
           make package
@@ -37,12 +37,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: botcczz.dylib
-          path: TelegramMenuTweak/*.dylib
+          path: botcczz.dylib
           retention-days: 30
       
       - name: Upload .deb package
         uses: actions/upload-artifact@v4
         with:
           name: botcczz.deb
-          path: TelegramMenuTweak/*.deb
+          path: .theos/packages/*.deb
           retention-days: 30
