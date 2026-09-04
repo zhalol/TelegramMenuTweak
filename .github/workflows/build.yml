@@ -28,7 +28,6 @@ jobs:
           brew install ldid dpkg
       
       - name: Build tweak
-        working-directory: .
         run: |
           make clean
           make package
