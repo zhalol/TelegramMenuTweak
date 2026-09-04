@@ -1,0 +1,9 @@
+Package: com.wscios.telegrammenu
+Name: Telegram Menu for Soccer Champs
+Version: 1.0
+Architecture: iphoneos-arm
+Description: Adds a floating menu button to open WSC IOS Telegram channel
+Maintainer: WSC IOS
+Author: WSC IOS
+Section: Tweaks
+Depends: mobilesubstrate
