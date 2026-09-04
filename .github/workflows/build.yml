@@ -25,6 +25,7 @@ jobs:
       
       - name: Install dependencies
         run: |
+          brew untap aws/tap || true
           brew install ldid dpkg
       
       - name: Build tweak
