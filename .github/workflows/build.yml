@@ -34,7 +34,7 @@ jobs:
           git clone --depth=1 https://github.com/theos/sdks.git /tmp/theos-sdks
           cp -a /tmp/theos-sdks/. "$HOME/theos/sdks/"
           "$HOME/theos/bin/install-theos" -q || true
-          test -x "$HOME/theos/toolchain/linux/iphone/bin/clang"
+          bash "$HOME/theos/bin/install-theos" -q
           "$HOME/theos/toolchain/linux/iphone/bin/clang" --version
 
       - name: Show project files
