@@ -33,9 +33,8 @@ jobs:
           echo "$HOME/theos/bin" >> "$GITHUB_PATH"
           git clone --depth=1 https://github.com/theos/sdks.git /tmp/theos-sdks
           cp -a /tmp/theos-sdks/. "$HOME/theos/sdks/"
-          mkdir -p "$HOME/theos/toolchain/linux/iphone"
-          curl -fL https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-linux-x86_64.tar.xz | tar -xJ -C "$HOME/theos/toolchain/linux/iphone" --strip-components=1
-          chmod +x "$HOME/theos/toolchain/linux/iphone/bin/clang"
+          "$HOME/theos/bin/install-theos" -q || true
+          test -x "$HOME/theos/toolchain/linux/iphone/bin/clang"
           "$HOME/theos/toolchain/linux/iphone/bin/clang" --version
 
       - name: Show project files
