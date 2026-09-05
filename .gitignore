@@ -1,1 +1,3 @@
 *.ipa
+.theos/
+*.ps1

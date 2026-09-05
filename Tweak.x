@@ -19,14 +19,30 @@ static inline BOOL TellaPref(NSString *key, BOOL defaultValue) {
     return val ? [val boolValue] : defaultValue;
 }
 
+// One-time defaults seeding (matches original Preferences.swift defaults)
+__attribute__((constructor))
+static void SatellaSeedDefaults(void) {
+    NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
+    if ([prefs objectForKey:kTellaIsEnabled]  == nil) [prefs setBool:YES  forKey:kTellaIsEnabled];
+    if ([prefs objectForKey:kTellaIsGesture]  == nil) [prefs setBool:YES  forKey:kTellaIsGesture];
+    if ([prefs objectForKey:kTellaIsHidden]   == nil) [prefs setBool:NO   forKey:kTellaIsHidden];
+    if ([prefs objectForKey:kTellaIsObserver] == nil) [prefs setBool:NO   forKey:kTellaIsObserver];
+    if ([prefs objectForKey:kTellaIsPriceZero]== nil) [prefs setBool:NO   forKey:kTellaIsPriceZero];
+    if ([prefs objectForKey:kTellaIsReceipt]  == nil) [prefs setBool:NO   forKey:kTellaIsReceipt];
+    if ([prefs objectForKey:kTellaIsStealth]  == nil) [prefs setBool:NO   forKey:kTellaIsStealth];
+    [prefs synchronize];
+
+    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier] ?: @"(unknown)";
+    NSLog(@"[botcczz] loaded into bundle: %@  defaults seeded", bundleID);
+}
+
 static UIButton *telegramButton = nil;
 static UIView *menuView = nil;
 static BOOL menuVisible = NO;
-static CGPoint initialCenter; // For pan gesture tracking
+static CGPoint initialCenter;
 
-@interface UIApplication (Private)
-- (void)openURL:(NSURL *)url options:(NSDictionary *)options completionHandler:(void (^)(BOOL success))completion;
-@end
+// Forward declaration for gesture-activation entry point
+@class SatellaToggleHost;
 
 @interface UIWindow (TelegramMenu)
 - (void)addTelegramMenu;
@@ -39,25 +55,78 @@ static CGPoint initialCenter; // For pan gesture tracking
 - (void)closeButtonTouchDown:(UIButton *)sender;
 - (void)closeButtonTouchUp:(UIButton *)sender;
 - (void)dismissMenuTap:(UITapGestureRecognizer *)gesture;
+- (void)installSatellaGesture;
 
 // IAP Control buttons
-- (UIButton *)createToggleButtonWithTitle:(NSString *)title on:(BOOL)isOn y:(CGFloat)y;
+- (UIButton *)createToggleButtonWithTitle:(NSString *)title on:(BOOL)isOn tagKey:(NSString *)key y:(CGFloat)y;
 - (void)iapButtonTapped:(UIButton *)sender;
+@end
+
+@interface SatellaToggleHost : NSObject
++ (instancetype)shared;
+- (void)toggleAllToggles;  // 3-finger tap
+@end
+
+@implementation SatellaToggleHost
++ (instancetype)shared {
+    static SatellaToggleHost *s; static dispatch_once_t once;
+    dispatch_once(&once, ^{ s = [SatellaToggleHost new]; });
+    return s;
+}
+- (void)toggleAllToggles {
+    // 3-finger tap: if Hidden, just unhide; otherwise flash a quick "ALL ON" acknowledgement
+    BOOL hidden = TellaPref(kTellaIsHidden, NO);
+    if (hidden) {
+        [[NSUserDefaults standardUserDefaults] setBool:NO forKey:kTellaIsHidden];
+        [[NSUserDefaults standardUserDefaults] synchronize];
+        return;
+    }
+    if (!TellaPref(kTellaIsGesture, YES)) return;
+    // Visual flash on key window
+    UIWindow *key = nil;
+    for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+        if ([s isKindOfClass:[UIWindowScene class]]) {
+            for (UIWindow *w in ((UIWindowScene *)s).windows) {
+                if (w.isKeyWindow) { key = w; break; }
+            }
+        }
+        if (key) break;
+    }
+    if (!key) return;
+    UIView *flash = [[UIView alloc] initWithFrame:key.bounds];
+    flash.backgroundColor = [UIColor colorWithRed:0.5 green:0.2 blue:0.8 alpha:0.35];
+    flash.userInteractionEnabled = NO;
+    [key addSubview:flash];
+    [UIView animateWithDuration:0.6 animations:^{ flash.alpha = 0.0; }
+                     completion:^(BOOL f){ [flash removeFromSuperview]; }];
+}
 @end
 
 %hook UIWindow
 
 - (void)makeKeyAndVisible {
     %orig;
-
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self addTelegramMenu];
+        [self installSatellaGesture];
     });
+}
+
+%new
+- (void)installSatellaGesture {
+    // 3-finger double-tap activation, mirroring original SatellaJailed BindableGesture
+    UITapGestureRecognizer *triple = [[UITapGestureRecognizer alloc] initWithTarget:[SatellaToggleHost shared]
+                                                                             action:@selector(toggleAllToggles)];
+    triple.numberOfTouchesRequired = 3;
+    triple.numberOfTapsRequired = 2;
+    triple.cancelsTouchesInView = NO;
+    [self addGestureRecognizer:triple];
 }
 
 %new
 - (void)addTelegramMenu {
     if (telegramButton) return;
+    if (TellaPref(kTellaIsHidden, NO)) return; // gesture-disabled hiding
 
     CGFloat buttonSize = 56.0;
     CGFloat margin = 16.0;
@@ -150,10 +219,27 @@ static CGPoint initialCenter; // For pan gesture tracking
 - (void)showMenu {
     if (menuView) return;
 
-    CGFloat menuWidth = 290;
-    CGFloat menuHeight = 460;
+    // Layout constants
+    CGFloat rowH = 44.0;
+    CGFloat gap  = 8.0;
+    CGFloat menuWidth  = 300;
+
+    // Fixed non-scrolling top section: title + 3 channel buttons + separator
+    CGFloat topSectionH = 254.0;   // ends at separator2 (y=254)
+    // Scrollable section: iapTitle (22pt + ~12pt padding) + 7 rows + 6 gaps
+    CGFloat iapHeaderH = 32.0;     // 10 padding + 22 label
+    NSInteger rowCount = 7;
+    CGFloat scrollContentH = iapHeaderH + rowH * rowCount + gap * (rowCount - 1) + 16.0;
+    CGFloat bottomPad = 16.0;
+    CGFloat idealMenuH = topSectionH + scrollContentH + bottomPad;
+
+    // Cap height to screen (with 40pt margin top+bottom)
+    CGFloat maxH = self.bounds.size.height - 40.0;
+    CGFloat menuHeight = MIN(idealMenuH, maxH);
+
     CGFloat menuX = (self.bounds.size.width - menuWidth) / 2;
     CGFloat menuY = (self.bounds.size.height - menuHeight) / 2;
+    if (menuY < 20) menuY = 20;
 
     UIView *overlay = [[UIView alloc] initWithFrame:self.bounds];
     overlay.tag = 9999;
@@ -171,6 +257,7 @@ static CGPoint initialCenter; // For pan gesture tracking
     menuView.layer.shadowRadius = 12;
     menuView.layer.borderWidth = 0.5;
     menuView.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.1].CGColor;
+    menuView.clipsToBounds = YES;  // important: scroll content stays inside rounded corners
 
     UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 20, menuWidth, 30)];
     titleLabel.text = @"WSC IOS";
@@ -184,55 +271,72 @@ static CGPoint initialCenter; // For pan gesture tracking
     [menuView addSubview:separator];
 
     UIButton *channelButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    channelButton.frame = CGRectMake(20, 84, menuWidth - 40, 52);
+    channelButton.frame = CGRectMake(20, 84, menuWidth - 40, 48);
     channelButton.backgroundColor = [UIColor colorWithRed:0.13 green:0.59 blue:0.95 alpha:1.0];
     channelButton.layer.cornerRadius = 14;
     [channelButton setTitle:@"📢  Наш канал" forState:UIControlStateNormal];
     [channelButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    channelButton.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
+    channelButton.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
     [channelButton addTarget:self action:@selector(openChannel) forControlEvents:UIControlEventTouchUpInside];
     [menuView addSubview:channelButton];
 
     UIButton *chatButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    chatButton.frame = CGRectMake(20, 146, menuWidth - 40, 52);
+    chatButton.frame = CGRectMake(20, 140, menuWidth - 40, 48);
     chatButton.backgroundColor = [UIColor colorWithRed:0.20 green:0.70 blue:0.55 alpha:1.0];
     chatButton.layer.cornerRadius = 14;
     [chatButton setTitle:@"💬  Наш чат" forState:UIControlStateNormal];
     [chatButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    chatButton.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
+    chatButton.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
     [chatButton addTarget:self action:@selector(openChat) forControlEvents:UIControlEventTouchUpInside];
     [menuView addSubview:chatButton];
 
     UIButton *creatorButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    creatorButton.frame = CGRectMake(20, 208, menuWidth - 40, 52);
+    creatorButton.frame = CGRectMake(20, 196, menuWidth - 40, 48);
     creatorButton.backgroundColor = [UIColor colorWithRed:0.85 green:0.35 blue:0.55 alpha:1.0];
     creatorButton.layer.cornerRadius = 14;
     [creatorButton setTitle:@"👑  Создатель" forState:UIControlStateNormal];
     [creatorButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    creatorButton.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
+    creatorButton.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
     [creatorButton addTarget:self action:@selector(openCreator) forControlEvents:UIControlEventTouchUpInside];
     [menuView addSubview:creatorButton];
 
-    UIView *separator2 = [[UIView alloc] initWithFrame:CGRectMake(20, 270, menuWidth - 40, 0.5)];
+    UIView *separator2 = [[UIView alloc] initWithFrame:CGRectMake(20, 254, menuWidth - 40, 0.5)];
     separator2.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.15];
     [menuView addSubview:separator2];
 
-    UILabel *iapTitle = [[UILabel alloc] initWithFrame:CGRectMake(20, 280, menuWidth - 40, 24)];
+    // === Scrollable area: iapTitle + 7 toggles ===
+    CGFloat scrollY = topSectionH;
+    CGFloat scrollH = menuHeight - scrollY - bottomPad;
+
+    UIScrollView *scroll = [[UIScrollView alloc] initWithFrame:CGRectMake(0, scrollY, menuWidth, scrollH)];
+    scroll.backgroundColor = [UIColor clearColor];
+    scroll.showsVerticalScrollIndicator = YES;
+    scroll.showsHorizontalScrollIndicator = NO;
+    scroll.alwaysBounceVertical = YES;
+    scroll.contentInset = UIEdgeInsetsMake(0, 0, 8, 0);
+    [menuView addSubview:scroll];
+
+    UIView *contentView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, menuWidth, scrollContentH)];
+    contentView.backgroundColor = [UIColor clearColor];
+    [scroll addSubview:contentView];
+    scroll.contentSize = CGSizeMake(menuWidth, scrollContentH);
+
+    UILabel *iapTitle = [[UILabel alloc] initWithFrame:CGRectMake(20, 10, menuWidth - 40, 22)];
     iapTitle.text = @"⚙️  SatellaJailed IAP";
     iapTitle.textColor = [UIColor colorWithWhite:0.7 alpha:1.0];
-    iapTitle.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
+    iapTitle.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
     iapTitle.textAlignment = NSTextAlignmentCenter;
-    [menuView addSubview:iapTitle];
+    [contentView addSubview:iapTitle];
 
-    BOOL iapEnabled = TellaPref(kTellaIsEnabled, YES);
-    BOOL priceZero = TellaPref(kTellaIsPriceZero, NO);
-    BOOL receipt = TellaPref(kTellaIsReceipt, NO);
-    BOOL observer = TellaPref(kTellaIsObserver, NO);
-
-    [menuView addSubview:[self createToggleButtonWithTitle:@"🔓  IAP Bypass" on:iapEnabled y:314]];
-    [menuView addSubview:[self createToggleButtonWithTitle:@"💰  Price = $0.01" on:priceZero y:366]];
-    [menuView addSubview:[self createToggleButtonWithTitle:@"🧾  Fake Receipt" on:receipt y:418]];
-    [menuView addSubview:[self createToggleButtonWithTitle:@"👁  Observer Hook" on:observer y:470]];
+    // 7 toggles — all 7 Preferences flags (placed inside scroll's contentView)
+    CGFloat y = iapHeaderH;   // start below iapTitle
+    [contentView addSubview:[self createToggleButtonWithTitle:@"🔓  IAP Bypass"      on:TellaPref(kTellaIsEnabled,  YES) tagKey:kTellaIsEnabled  y:y]]; y += rowH + gap;
+    [contentView addSubview:[self createToggleButtonWithTitle:@"👆  3-finger Gesture" on:TellaPref(kTellaIsGesture,  YES) tagKey:kTellaIsGesture  y:y]]; y += rowH + gap;
+    [contentView addSubview:[self createToggleButtonWithTitle:@"🙈  Hide Toggle"      on:TellaPref(kTellaIsHidden,   NO)  tagKey:kTellaIsHidden   y:y]]; y += rowH + gap;
+    [contentView addSubview:[self createToggleButtonWithTitle:@"👁  Observer Hook"    on:TellaPref(kTellaIsObserver, NO)  tagKey:kTellaIsObserver y:y]]; y += rowH + gap;
+    [contentView addSubview:[self createToggleButtonWithTitle:@"💰  Price = $0.01"    on:TellaPref(kTellaIsPriceZero,NO)  tagKey:kTellaIsPriceZero y:y]]; y += rowH + gap;
+    [contentView addSubview:[self createToggleButtonWithTitle:@"🧾  Fake Receipt"     on:TellaPref(kTellaIsReceipt,  NO)  tagKey:kTellaIsReceipt  y:y]]; y += rowH + gap;
+    [contentView addSubview:[self createToggleButtonWithTitle:@"🥷  Stealth Mode"     on:TellaPref(kTellaIsStealth,  NO)  tagKey:kTellaIsStealth  y:y]];
 
     UIButton *closeButton = [UIButton buttonWithType:UIButtonTypeSystem];
     closeButton.frame = CGRectMake(menuWidth - 44, 8, 36, 36);
@@ -315,49 +419,69 @@ static CGPoint initialCenter; // For pan gesture tracking
 }
 
 %new
-- (UIButton *)createToggleButtonWithTitle:(NSString *)title on:(BOOL)isOn y:(CGFloat)y {
-    CGFloat menuWidth = 290;
+- (UIButton *)createToggleButtonWithTitle:(NSString *)title on:(BOOL)isOn tagKey:(NSString *)key y:(CGFloat)y {
+    CGFloat menuWidth = 300;
     UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
     btn.frame = CGRectMake(20, y, menuWidth - 40, 44);
     btn.backgroundColor = isOn ? [UIColor colorWithRed:0.2 green:0.6 blue:0.3 alpha:1.0] : [UIColor colorWithRed:0.6 green:0.2 blue:0.2 alpha:1.0];
     btn.layer.cornerRadius = 12;
     [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    btn.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+    btn.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
     [btn setTitle:[NSString stringWithFormat:@"%@  %@", title, isOn ? @"✅ ВКЛ" : @"❌ ВЫКЛ"] forState:UIControlStateNormal];
-    btn.tag = (int)y;
+    // Stash the key in an associated object via objc_setAssociatedObject
+    objc_setAssociatedObject(btn, "tellaKey", key, OBJC_ASSOCIATION_COPY_NONATOMIC);
     [btn addTarget:self action:@selector(iapButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
     return btn;
 }
 
 %new
 - (void)iapButtonTapped:(UIButton *)sender {
-    NSString *key = nil;
-    switch ((int)sender.tag) {
-        case 314: key = kTellaIsEnabled; break;
-        case 366: key = kTellaIsPriceZero; break;
-        case 418: key = kTellaIsReceipt; break;
-        case 470: key = kTellaIsObserver; break;
-        default: return;
-    }
+    NSString *key = objc_getAssociatedObject(sender, "tellaKey");
+    if (![key isKindOfClass:[NSString class]]) return;
 
     BOOL newValue = !TellaPref(key, NO);
     [[NSUserDefaults standardUserDefaults] setBool:newValue forKey:key];
     [[NSUserDefaults standardUserDefaults] synchronize];
 
+    // Stealth mode effect: when turning on, also disable priceZero & receipt
+    // (mirrors donate-mode philosophy: pretend nothing modified)
+    if ([key isEqualToString:kTellaIsStealth] && newValue) {
+        [[NSUserDefaults standardUserDefaults] setBool:NO forKey:kTellaIsPriceZero];
+        [[NSUserDefaults standardUserDefaults] setBool:NO forKey:kTellaIsReceipt];
+        [[NSUserDefaults standardUserDefaults] synchronize];
+    }
+
+    // Visual update of the tapped row
     sender.backgroundColor = newValue ? [UIColor colorWithRed:0.2 green:0.6 blue:0.3 alpha:1.0] : [UIColor colorWithRed:0.6 green:0.2 blue:0.2 alpha:1.0];
-    NSString *baseTitle = [sender.titleLabel.text componentsSeparatedByString:@"  "][0];
+    NSString *current = sender.titleLabel.text ?: @"";
+    NSArray *parts = [current componentsSeparatedByString:@"  "];
+    NSString *baseTitle = (parts.count >= 2) ? parts[0] : current;
     [sender setTitle:[NSString stringWithFormat:@"%@  %@", baseTitle, newValue ? @"✅ ВКЛ" : @"❌ ВЫКЛ"] forState:UIControlStateNormal];
 
     UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
     [feedback prepare];
     [feedback impactOccurred];
+
+    // If user enabled "Hide Toggle" via the button, immediately hide floating button
+    if ([key isEqualToString:kTellaIsHidden] && newValue) {
+        if (telegramButton) {
+            [UIView animateWithDuration:0.25 animations:^{
+                telegramButton.alpha = 0.0;
+                telegramButton.transform = CGAffineTransformMakeScale(0.6, 0.6);
+            } completion:^(BOOL f) {
+                [telegramButton removeFromSuperview];
+                telegramButton = nil;
+            }];
+        }
+        [self hideMenu];
+    }
 }
 
 %end
 
 
 // ============================================================
-// SatellaJailed IAP Hooks (core working hooks only)
+// SatellaJailed IAP Hooks
 // ============================================================
 
 // 1. CanPayHook - Always allow purchases
@@ -396,17 +520,19 @@ static CGPoint initialCenter; // For pan gesture tracking
 }
 %end
 
-// 3. ProductHook - Make products appear free (price = 0.01)
+// 3. ProductHook - Make products appear free (price = 0.01) — disabled in Stealth
 %hook SKProduct
 - (NSDecimalNumber *)price {
+    if (TellaPref(kTellaIsStealth,  NO)) return %orig;
     if (!TellaPref(kTellaIsPriceZero, NO)) return %orig;
     return [NSDecimalNumber decimalNumberWithString:@"0.01"];
 }
 %end
 
-// 4. ReceiptHook - Provide fake transaction receipt
+// 4. ReceiptHook - Provide fake transaction receipt — disabled in Stealth
 %hook SKPaymentTransaction
 - (NSData *)transactionReceipt {
+    if (TellaPref(kTellaIsStealth,  NO)) return %orig;
     if (!TellaPref(kTellaIsReceipt, NO)) return %orig;
     return [NSData data];
 }
