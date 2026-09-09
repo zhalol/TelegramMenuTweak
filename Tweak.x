@@ -70,6 +70,11 @@ static CGPoint initialCenter;
 @end
 
 
+@interface SatellaToggleHost : NSObject
++ (instancetype)shared;
+- (void)toggleAllToggles;
+@end
+
 @implementation SatellaToggleHost
 + (instancetype)shared {
     static SatellaToggleHost *s; static dispatch_once_t once;
