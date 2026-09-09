@@ -54,8 +54,7 @@ jobs:
         with:
           name: TelegramMenuTweak-build
           path: |
-            .theos/obj/**/*.dylib
-            .theos/packages/*.deb
-            *.dylib
+            .theos/obj/arm64/botcczz.dylib
+            .theos/packages/ios-arm64/botcczz.deb
           if-no-files-found: warn
           retention-days: 30
