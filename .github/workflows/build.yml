@@ -20,6 +20,8 @@ jobs:
 
       - name: Install build dependencies
         run: |
+          sudo rm -rf /var/lib/apt/lists/*
+          sudo apt-get clean
           sudo apt-get update
           sudo apt-get install -y git make perl clang dpkg-dev xz-utils curl ca-certificates
           curl -fL -o /tmp/ldid https://github.com/ProcursusTeam/ldid/releases/download/v2.1.5-procursus7/ldid_linux_x86_64
